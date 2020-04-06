@@ -4,6 +4,9 @@
 Created on Thu Mar 26 15:19:24 2020
 
 @author: jf
+TODO:
+    -extract DC-implicit and SDC-implicit methods and add them to the fcs class
+    -remove unnecessary functions (DC2 or DC) best would be to unify DC-EE and DC-IE into one function
 """
 class fcs:
     
@@ -137,6 +140,9 @@ class fcs:
         return y
     
     def polyint(x,xm,ym,lagrange=lagrange):
+        """
+        calculates lagrange polynomial
+        """
         import numpy as np
         n = len(xm) - 1
         lagrpoly = np.array([lagrange(x, i, xm) for i in range(n + 1)])
@@ -145,6 +151,8 @@ class fcs:
 
     def jacobian(f,t,y,dy=1e-6):
         """
+        Calculates Jacobian Matrix of function f(t,y) at points (t,y)
+        
         Parameters
         ----------
         f : TYPE function
@@ -176,12 +184,12 @@ class fcs:
         
         return jac.T
     
-    def newton(f,t,y0,jacobian=jacobian):
+    def newton(f,t,y0,jacobian=jacobian,acc = 1e-6):
         import numpy as np
         import copy
         i = 0
         x = copy.deepcopy(y0)
-        while np.sqrt(np.dot(np.asarray(f(t, x)), np.asarray(f(t, x)))) > 1e-16:
+        while np.sqrt(np.dot(np.asarray(f(t, x)), np.asarray(f(t, x)))) > acc:
             if i > 1000:
                 break
             Df = jacobian(f, 0, x)
@@ -207,6 +215,8 @@ class fcs:
         b: end of interval
         y0:array containing initial values
         dt:step size
+        iffunction: specify wether a function or an array is passed as
+                    the RHS of the IVP
         """
         import numpy as np
         if equispaced:
@@ -258,16 +268,79 @@ class fcs:
         dx2 = 0
         dx1 = 0
         y, t = integrator(f_x, a, b, y0, dt)
-        dx1 = f_x(t, y)
+        dx1 = f_x(t, y+delta) # y+ delta for all functions this needs to be changed!
         for i in range(0, iterations):
+            print('i:' + str(i))
             dx2 = polyderiv(t, t, y)
+            print(dx2)
             deltad = dx1 - dx2
             delta, t = integrator(deltad, a, b, 0, dt, False)
             y = y + delta
-        
         return y, t, delta, dx1, dx2
+
+    def deferred_correction2(f_x,a,b,y0,dt,iterations=3,integrator=euler_explicit,polyderiv=polyintd,equispaced=True):
+        """
+        numerical integration of f_x in the interval [a,b] starting at [a,y0]
+        using deferred corrections.
+        Does NOT work yet with functions that depend on F = int f_x iteself
+        because there is no way to include delta into integrator yet
+        """
+        import numpy as np
+        dx2 = 0
+        dx1 = 0
+        y, t = integrator(f_x, a, b, y0, dt,equispaced=equispaced)
+        for i in range(0, iterations):
+            def deltafunction(time,x,f=f_x,delta=0,polyderiv=polyderiv,tt=t,y=y):
+                dx1 = f(time,x+delta)
+                dx2 = polyderiv(time,tt,y)
+                print(dx2)
+                deltad = dx1-dx2
+                return deltad
+            tt, yy = a, 0
+            sol = yy
+            ttt = tt
+            if equispaced==True:
+                while tt < b:
+                    try:
+                        yy = yy + dt * deltafunction(tt, yy,delta=yy)
+                        sol = np.append(sol, yy)
+                        tt += dt
+                        ttt = np.append(ttt, tt)
+                    except Exception as ex:
+                        print(ex)
+            else:
+                j=1
+                while tt < b:
+                    try:
+                        ddt= dt[j]-dt[j-1] 
+                        yy = yy + ddt * deltafunction(tt, yy,delta=yy)
+                        sol = np.append(sol, yy)
+                        tt += ddt
+                        ttt = np.append(ttt, tt)
+                        j+=1
+                    except Exception as ex:
+                        print(ex)
+            y = y + sol
+        return y, t, 1, dx1, dx2
+            
     
     def coord_trans(cin,a,b,A=-1,B=1):
+        """
+        transforms coordinates cin within the interval [A,B] 
+        to coordinates cout within a new interval [a,b]
+
+        Parameters
+        ----------
+        cin : coordinates within interval [A,B]
+        a : lower boundary of new interval
+        b : upper boundary of new interval
+        A : initial interval lower boundary, default is A=-1
+        B : initial interval upper boundary, default is B=1
+
+        Returns
+        -------
+        cout : coordinates within new interval [a,b]
+        """
         cout = ((b - a) * cin + a * B - b * A) / (B - A)
         return cout
 
@@ -376,19 +449,29 @@ class fcs:
     def SDC(f,a,b,y0,dt,iterations=3,equispaced=False,integrator=euler_explicit,GL=GL,GQ=GQ,NP=Newton_polynomial_specific):   
         """
         Calculates trajectory of dynamical systems using SDC method
+        GL function calculating Gauss Legendre nodes and weights
+        NP function evaluating Lagrange polynomial specific time 
+        GQ gaussian quadrature
+        TODO:
+            equispace must be false -> remove or change
+            adapt for different integrators e.g. delta = integrator(*args)
+            
         """
         import numpy as np
-        N = len(dt) - 2
-        y, t = integrator(f, a, b, y0, dt, equispaced=equispaced)
+        N = len(dt) - 2 #number of nodes between a and b
+        y, t = integrator(f, a, b, y0, dt, equispaced=equispaced) #initial trajectory
         for j in range(0, iterations):
             epsilon = np.zeros(len(t))
             epsilon[0] = y0
             for i in range(1, len(t)):
                 nodes, garbage = GL(N, a, t[i])
                 garbage, specific = NP(nodes, t, f(t, y))
-                epsilon[i] = GQ(specific, a, (t[i]), M=N) + y0
-        
+                # integrate polynomial from a to t[i], M (number of Gauss Legendre nodes) could be chosen arbitrarily 
+                epsilon[i] = GQ(specific, a, (t[i]), M=N) + y0 # this could be improved, because GL was already called and will be again within GQ
+            
+            #calculate epsilon
             epsilon = epsilon - y
+            # now everything is known to calculate delta
             delta = np.zeros(len(t))
             for i in range(1, len(t)):
                 dt = t[i] - t[(i - 1)]
@@ -396,4 +479,43 @@ class fcs:
             y = y + delta
         return t, y
     
+    #implicit euler
+    def implicit_euler(f,a,b,y0,dt,newton=newton):
+        """
+        implicit/backward Euler method
+
+        Parameters
+        ----------
+        f : function to integrate
+        a : lower boundary (integer)
+        b : upper boundary (integer)
+        y0 :initial value(s) (np.array or list)
+        dt : timestep
+        newton : method to calculate at new time step
+                default is newton method, but any other will do
+
+        Returns
+        -------
+        solution (np.array), timeslices (np.array)
+
+        """
+        import numpy as np
+        y = np.asarray(y0)
+        t = a
+        tt = t    
+        sol = list([y])
+        i = 0
+        def ff1(t,x,f=f,y=y,dt = dt):
+            x = np.asarray(x)
+            y = np.asarray(y)
+            return x-y-dt*np.asarray(f(t,x))
+        while t < b-dt/4:
+            t = t+dt
+            tt = np.append(tt,t)
+            y_s1 = newton(ff1, t,sol[i])
+            y = sol[i] + dt*np.asarray(f(t,y_s1)) # not needed just for checking...
+            sol = np.append(sol,list([y]),axis=0)
+            i += 1
+            ff1.__defaults__ = (f,y,dt) #update y in defaults|is necessary for newton to work properly
+        return sol[:,0],tt
 
