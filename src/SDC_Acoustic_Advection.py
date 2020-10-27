@@ -16,12 +16,14 @@ x = SpatialCoordinate(mesh)[0]      # extract coordinates
 c_s = Constant(1)                   # speed of sound
 U = Constant(0.05)                  # mean flow
 
-VV = FunctionSpace(mesh, 'Lagrange', 1)  # function space. Functions will be approximated using first order Lagrange Polynomials
+VV = FunctionSpace(mesh, 'GLL', 1)  # function space. Functions will be approximated using first order Lagrange Polynomials
 V = VV*VV                                # Create mixed functions space. Need to use due to coupled system
 U_0 = Function(V)
 U_n1 = Function(V)                       # Vector containing Solutions at t+1
 U_n = Function(V)                        # Vector containing Solutions at t
-
+X = Function(V) 
+U_old1 = Function(V)
+U_old2 = Function(V)
 
 u_n, p_n = U_n.split()      # important! don't use split(U_n) but how is this related to wence warning? See: https://github.com/firedrakeproject/firedrake/issues/1819
 u_n1, p_n1 = U_n1.split()   # splitting not needed but can be little easier to read
@@ -79,6 +81,12 @@ solver = NonlinearVariationalSolver(problem, nest=False, solver_parameters={'mat
                                                                          'ksp_type': 'preonly',
                                                                          'pc_type': 'lu'})  # {"ksp_type": "preonly", "pc_type": "ilu"})
 
+F_SDC = (inner((U_n1 - U_n - dt*(right_hand_side(U_n, U_n1)-right_hand_side(U_old1, U_old2)) - X), v)) * dx
+problem_SDC = NonlinearVariationalProblem(F_SDC, U_n1)
+SDC_solver = NonlinearVariationalSolver(problem_SDC, nest=False, solver_parameters={'mat_type': 'aij',
+                'ksp_type': 'preonly',
+                'pc_type': 'lu'})
+
 # results stores every timestep
 results = [Function(U_n)]
 
@@ -125,14 +133,13 @@ while t <= t_end:
         U_n_new = [Function(U_n)]   # create storage for k+1 iteration
         for i in range(0, M):
             dt.assign(dts[i])
-            X = as_vector([quadrature_u[i], quadrature_p[i]])
+            X.assign(project(as_vector([quadrature_u[i], quadrature_p[i]]), V))
+            U_old1.assign(U_n_old[i])
+            U_old2.assign(U_n_old[i+1])
+            #X = as_vector([quadrature_u[i], quadrature_p[i]]) # old version
             # this needs to be done with assign, but I dont know how to do it because listtensor object has no attriute assign...
             # seems to be a waste of ressources to define the problem within every iteration
-            F_SDC = (inner((U_n1 - U_n - dt*(right_hand_side(U_n, U_n1)-right_hand_side(U_n_old[i], U_n_old[i+1])) - X), v)) * dx
-            problem_SDC = NonlinearVariationalProblem(F_SDC, U_n1)
-            SDC_solver = NonlinearVariationalSolver(problem_SDC, nest=False, solver_parameters={'mat_type': 'aij',
-                'ksp_type': 'preonly',
-                'pc_type': 'lu'})
+
             SDC_solver.solve()
             U_n.assign(U_n1)
             U_n_new.append(Function(U_n))
@@ -161,7 +168,6 @@ fig, axes = plt.subplots()
 
 # NBVAL_IGNORE_OUTPUT
 
-tt = np.arange(0, t_end+d_t, d_t)
 def animate(U_n):
     u_n, p_n = U_n.split()
     axes.clear()
