@@ -620,20 +620,22 @@ class fcs:
     def rnw_r(n,a,b,A=-1,B=1):
         import numpy as np
         from scipy.special import legendre
-        #        DOES NOT WORK YET
+        # nodes and weights for gauss - radau quadrature
+        nodes=np.zeros(n)
         nodes[0]=A
         #nodes[-1]=B
         p = np.poly1d([1,1])
         pn = legendre(n)
         pn1= legendre(n-1)
         poly,remainder = (pn + pn1)/p # [1] returns remainder from polynomial division
-        print('Polynomial division remainder: '+str(remainder(0))) #CAREFUL: remainder increases with n
+        #print('Polynomial division remainder: '+str(remainder(0))) #CAREFUL: remainder increases with n
         nodes[1:] = np.sort(poly.roots)
-        nodes = (1-nodes)[::-1]
         weights = 1/n**2 * (1-nodes[1:])/(pn1(nodes[1:]))**2
         weights = np.append(2/n**2,weights)
         nodes = ((b - a) * nodes + a * B - b * A) / (B - A)
-        weights=(b-a)/(B-A)*weights
+        weights=(b - a)/(B - A)*weights
+        nodes = ((b + a) - nodes)[::-1] # reverse nodes
+        weights = weights[::-1] # reverse weights
         return nodes, weights
     
     def Qmatrix(nodes,a,my_get_weights=my_get_weights):
@@ -756,8 +758,9 @@ class fcs:
                     #print('D: '+str(delta[i]))
             y = y + delta
             y_old = deepcopy(y_new)
-        #y = np.append(y, NP(t[-1], t[0:-1], y)[1])
-        y_new = np.append(y_new, NP(t[-1], t[0:-1], y_new)[1])
+        n, w =  GL(len(t)-2,a,b)
+        endpoint = np.dot(f(t[1:-1],y_new[1:]),w) + y0 # final update
+        y_new = np.append(y_new, endpoint)
         return t, y_new, res_out,y
 
     def SDC_D2(f,a,b,y0,dt,iterations=3,equispaced=False,integrator=euler_explicit,GL=GL,GQ=GQ,NP=Newton_polynomial_specific,getQ = Qmatrix,getS = Smatrix,gw = my_get_weights,test=False):   
@@ -783,6 +786,7 @@ class fcs:
         #Sol = np.linalg.solve(A,B) # works and returns correct solution
         S = getS(Q)
         y_new = y_new[0:-1] # don't need f(t_n) now
+        #y_new[:]=y0
         y_old = deepcopy(y_new)
         for j in range(0, iterations):
             rhs = f(t[1:-1], y_new[1:])
@@ -793,9 +797,15 @@ class fcs:
             for i in range(1, len(t)-1):
                 dt = t[i] - t[(i - 1)]
                 y_new[i] = y_new[i-1] + dt*(f(t[i-1],y_new[i-1]) -f(t[i-1],y_old[i-1])) + resi2[i-1]
+                #y_new[i] = y_new[i-1] + dt*(f(t[i-1],y_new[i-1]) -f(t[i-1],y_old[i-1])) + sum(S[:,i-1]*rhs[i-1])
             y_old = deepcopy(y_new)
-        y_new = np.append(y_new, NP(t[-1], t[0:-1], y_new)[1])
-        return t, y_new, res_out
+        n, w =  GL(len(t)-2,a,b)
+        endpoint = np.dot(f(t[1:-1],y_new[1:]),w) + y0 # final update
+        y_new = np.append(y_new, endpoint)
+        if iterations == 0:
+            return t, y_new, 0
+        else:
+            return t,y_new, res_out
     
     def SDC_D2_implicit(f,a,b,y0,dt,iterations=3,equispaced=False,integrator=implicit_euler,GL=GL,GQ=GQ,NP=Newton_polynomial_specific,getQ = Qmatrix,getS = Smatrix,gw = my_get_weights,newton=newton,test=True):   
         """
@@ -854,8 +864,10 @@ class fcs:
             res_out = np.append(0,res_out)
             res_out = res_out +y0 -y_new
             y_old = deepcopy(y_new)
-
-        y_new = np.append(y_new, NP(t[-1], t[0:-1], y_new)[1])
+        n, w =  GL(len(t)-2,a,b)
+        endpoint = np.dot(f(t[1:-1],y_new[1:]),w) + y0 # final update
+        y_new = np.append(y_new, endpoint)
+        #y_new = np.append(y_new, NP(t[-1], t[0:-1], y_new)[1]) # correct as in SDC_D2, this works but is not how it is done
         return t, y_new, res_out
  
     def IMEX(ff,fs,y0,t,newton=newton):
@@ -890,6 +902,7 @@ class fcs:
         from copy import deepcopy
         import matplotlib.pyplot as plt
         y_new = integrator(ff,fs,y0, dt) #initial trajectory
+        print(y_new)
         t = dt
         Q = getQ(t[1:-1],a,gw)
         S = getS(Q)
@@ -904,7 +917,6 @@ class fcs:
         # initialize y_new (new iteration) and y_old (previous iteration)
         y_new = y_new[0:-1] # don't need f(t_n) now
         y_old = deepcopy(y_new)
-        
         #calculate residual | res_out is for output ONLY and could be removed.
         rhs = f(t[1:-1], y_new[1:])
         resi2 = S@rhs
@@ -956,6 +968,8 @@ class fcs:
     def Q_slow(t):
         """
         EQ. 3.7 SISDC Paper
+        this equation is incorrect. compare to eq 3.3 in paper
+        Q_slow does not correspond to explicit euler
         """
         import numpy as np
         dim = len(t)-2
@@ -968,6 +982,7 @@ class fcs:
         return Q_s
     
     def Q_slow_alt(t,Qf = Q_fast):
+        # this one should be correct
         import numpy as np
         Q_f = Qf(t)
         Q_s = np.zeros(Q_f.shape)
